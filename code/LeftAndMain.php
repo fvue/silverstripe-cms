@@ -498,6 +498,98 @@ class LeftAndMain extends Controller {
 	}
 
 	/**
+	 * Recursive function
+	 */
+	function chiGetSiteTreeForRecursive(&$tree, $parent_id = 0) {
+		$html = $prev = $next = null;
+		while (! is_null($node = array_shift($tree))) {
+			$id = $node['ID'];
+			$class = $node['ClassName'];
+			$css = array($class, 'closed');
+			$node['ShowInMenus'] || $css[] = 'notinmenu';
+			$node['ID'] == $this->currentPageID() && $css[] = 'current';
+			$csss = join(' ', $css);
+			$title = $node['Title'];
+			if ($node['Status'] == 'Saved (update)') {
+				$title = "<span class='modified'>$title</span>";
+			}
+			$html .= <<<HTML
+			<li id="record-$id" class="$csss">
+				<a href="admin/show/$id" class="$csss" title="Pagina type: $class">$title</a>
+HTML;
+
+			// Is there a next node?
+			if (count($tree)) {
+				// Yes, there's a next node
+				// Is next node a child of this node?
+				if ($tree[0]['ParentID'] == $node['ID']) {
+					// Yes, next node is a child of this node;
+					// Insert child(ren) recursive for this node
+					$html .= "\n<ul>\n" . $this->chiGetSiteTreeForRecursive($tree, $node['ID']) . "\n</ul>\n";
+				} else {
+					// No, next node isn't a child of this node;
+					// Close html
+					$html .= '</li>';
+					// Is next node a child of this recursive-parent?
+					if ($tree[0]['ParentID'] != $parent_id) {
+						// No, next node isn't a child of this recursive-parent;
+						// End this recursion
+						break;
+					}
+				}
+			} else {
+				// No, there is no next node;
+				// Close html
+				$html .= '</li>';
+			}
+		}
+		return $html;
+	}
+
+	function chiGetSiteTreeFor() {
+		# See: http://explainextended.com/2009/07/17/postgresql-8-4-preserving-order-for-hierarchical-query/
+		$query =<<<SQL
+		WITH RECURSIVE q AS (
+			SELECT s, 1 AS level, ARRAY["Sort", "ID"] AS breadcrumb, "Status"
+			FROM "SiteTree" s
+			WHERE "ParentID" = 0
+			UNION ALL
+			SELECT s2, q.level + 1 AS level, breadcrumb || ARRAY["Sort", "ID"], s2."Status"
+			FROM q
+				JOIN "SiteTree" s2
+					ON s2."ParentID" = (q.s)."ID"
+		)
+		SELECT (q.s)."ID",
+			(q.s)."ParentID",
+			CASE WHEN (q.s)."MenuTitle" IS NOT NULL
+				THEN (q.s)."MenuTitle"
+				ELSE (q.s)."Title" 
+			END AS "Title",
+			(q.s)."ClassName",
+			(q.s)."ShowInMenus",
+			(q.s)."Status"
+		FROM	q
+		ORDER BY breadcrumb;
+SQL;
+		$vw = DB::query($query);
+		$tree = pg_fetch_all(DB::$lastQuery);
+
+		$html = $this->chiGetSiteTreeForRecursive($tree);
+		return <<<HTML
+		<div id="sitetree_ul">
+			<ul id="sitetree" class="tree unformatted">
+			  <li id="record-0" class="Root nodelete">
+				<a href="admin/show/root"><strong>Your Site Name</strong></a>
+				<ul>
+				  $html
+				</ul>
+			  </li>
+			</ul>
+		</div>
+HTML;
+	}
+
+	/**
 	 * Get a site tree displaying the nodes under the given objects
 	 * @param $className The class of the root object
 	 * @param $rootID The ID of the root object.  If this is null then a complete tree will be
@@ -506,6 +598,7 @@ class LeftAndMain extends Controller {
 	 *                        Children, AllChildrenIncludingDeleted, or AllHistoricalChildren
 	 */
 	function getSiteTreeFor($className, $rootID = null, $childrenMethod = null, $numChildrenMethod = null, $filterFunction = null, $minNodeCount = 30) {
+		return $this->chiGetSiteTreeFor();
 		// Default childrenMethod and numChildrenMethod
 		if (!$childrenMethod) $childrenMethod = 'AllChildrenIncludingDeleted';
 		if (!$numChildrenMethod) $numChildrenMethod = 'numChildren';
