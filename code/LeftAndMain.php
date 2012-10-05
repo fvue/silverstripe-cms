@@ -501,93 +501,148 @@ class LeftAndMain extends Controller {
 	 * Recursive function
 	 */
 	function chiGetSiteTreeForRecursive(&$tree, $parent_id = 0) {
-		$html = $prev = $next = null;
-		while (! is_null($node = array_shift($tree))) {
-			$id = $node['ID'];
-			$class = $node['ClassName'];
-			$css = array($class, 'closed');
-			$node['ShowInMenus'] || $css[] = 'notinmenu';
-			$node['ID'] == $this->currentPageID() && $css[] = 'current';
-			$csss = join(' ', $css);
-			$title = $node['Title'];
-			if ($node['Status'] == 'Saved (update)') {
-				$title = "<span class='modified'>$title</span>";
-			}
-			$html .= <<<HTML
-			<li id="record-$id" class="$csss">
-				<a href="admin/show/$id" class="$csss" title="Pagina type: $class">$title</a>
+        $html = $prev = $next = null;
+        $added_to_draft = _t('SiteTree.ADDEDTODRAFT', 'Added to draft site');
+        $modified_on_draft = _t('SiteTree.MODIFIEDONDRAFT', 'Modified on draft site');
+        $removed_from_draft = _t('SiteTree.REMOVEDFROMDRAFT', 'Removed from draft site');
+        $page_type = _t('LeftAndMain.PAGETYPE','Page type: ');
+        while (! is_null($node = array_shift($tree))) {
+            $id = $node['ID'];
+            $class = $node['ClassName'];
+            $css = array($class, 'closed');
+            $node['ShowInMenus'] || $css[] = 'notinmenu';
+            $node['ID'] == $this->currentPageID() && $css[] = 'current';
+            $csss = join(' ', $css);
+            $title = $node['Title'];
+            if ($node['DraftOnly'] == 't') {
+                $title = "<ins title=\"$added_to_draft\">$title</del>";
+            } else {
+                if ($node['Status'] == 'Saved (update)') {
+                    $title = "<span class='modified' title=\"$modified_on_draft\">$title</span>";
+                }
+                if ($node['LifeOnly'] == 't') {
+                    $title = "<del title=\"$removed_from_draft\">$title</del>";
+                }
+            }
+            if ($node['ParentID'] == $parent_id && is_null($node['DraftOnly'])) {
+                $html .= <<<HTML
+                <li id="record-$id" class="$csss">
+                    <a href="admin/show/$id" class="$csss" title="$page_type$class">$title</a>
 HTML;
-
-			// Is there a next node?
-			if (count($tree)) {
-				// Yes, there's a next node
-				// Is next node a child of this node?
-				if ($tree[0]['ParentID'] == $node['ID']) {
-					// Yes, next node is a child of this node;
-					// Insert child(ren) recursive for this node
-					$html .= "\n<ul>\n" . $this->chiGetSiteTreeForRecursive($tree, $node['ID']) . "\n</ul>\n";
-				} else {
-					// No, next node isn't a child of this node;
-					// Close html
-					$html .= '</li>';
-					// Is next node a child of this recursive-parent?
-					if ($tree[0]['ParentID'] != $parent_id) {
-						// No, next node isn't a child of this recursive-parent;
-						// End this recursion
-						break;
-					}
-				}
-			} else {
-				// No, there is no next node;
-				// Close html
-				$html .= '</li>';
-			}
-		}
-		return $html;
+                // Is there a next node?
+                if (count($tree)) {
+                    // Yes, there's a next node
+                    // Is next node a child of this node?
+                    if ($tree[0]['ParentID'] == $node['ID']) {
+                        // Yes, next node is a child of this node;
+                        // Insert child(ren) recursive for this node
+                        $html .= "\n<ul>\n" . $this->chiGetSiteTreeForRecursive($tree, $node['ID']) . "\n</ul>\n";
+                    } else {
+                        // No, next node isn't a child of this node;
+                        // Close html
+                        $html .= '</li>';
+                        // Is next node a child of this recursive-parent?
+                        if ($tree[0]['ParentID'] != $parent_id && ! is_null($node['DraftOnly'])) {
+                            // No, next node isn't a child of this recursive-parent;
+                            // End this recursion
+                            break;
+                        }
+                    }
+                } else {
+                    // No, there is no next node;
+                    // Close html
+                    $html .= '</li>';
+                }
+            } else {
+                if ($parent_id != 0) {
+                    array_unshift($tree, $node);
+                    break;
+                } else {
+                    $html .= <<<HTML
+                    <li id="record-$id" class="$csss">
+                        <a href="admin/show/$id" class="$csss" title="$page_type$class">$title</a>
+                    </li>
+HTML;
+                }
+            }
+        }
+        return $html;
 	}
 
 	function chiGetSiteTreeFor() {
-		# See: http://explainextended.com/2009/07/17/postgresql-8-4-preserving-order-for-hierarchical-query/
-		$query =<<<SQL
-		WITH RECURSIVE q AS (
-			SELECT s, 1 AS level, ARRAY["Sort", "ID"] AS breadcrumb, "Status"
-			FROM "SiteTree" s
-			WHERE "ParentID" = 0
-			UNION ALL
-			SELECT s2, q.level + 1 AS level, breadcrumb || ARRAY["Sort", "ID"], s2."Status"
-			FROM q
-				JOIN "SiteTree" s2
-					ON s2."ParentID" = (q.s)."ID"
-		)
-		SELECT (q.s)."ID",
-			(q.s)."ParentID",
-			CASE WHEN (q.s)."MenuTitle" IS NOT NULL
-				THEN (q.s)."MenuTitle"
-				ELSE (q.s)."Title" 
-			END AS "Title",
-			(q.s)."ClassName",
-			(q.s)."ShowInMenus",
-			(q.s)."Status"
-		FROM	q
-		ORDER BY breadcrumb;
+        # See: http://explainextended.com/2009/07/17/postgresql-8-4-preserving-order-for-hierarchical-query/
+        # NOTE: Tree items existing in SiteTree only (not SiteTree_Live) - i.e.
+        #       with title "Added to draft site" - are shown at the bottom of the site
+        #       tree.  This is because the recursive query below doesn't accept a FULL JOIN of t2.
+        $query =<<<SQL
+        WITH RECURSIVE q AS (
+            SELECT l, 1                                AS level, 
+                ARRAY[COALESCE(t."Sort", l."Sort"), COALESCE(t."ID", l."ID")] AS breadcrumb,   
+                COALESCE(t."Status", l."Status")       AS "Status", 
+                t."ID" IS NULL                         AS "LifeOnly",
+                COALESCE(t."Title", l."Title")         AS "Title",
+                COALESCE(t."MenuTitle", l."MenuTitle") AS "MenuTitle"
+            FROM "SiteTree_Live" l
+                LEFT JOIN "SiteTree" t
+                    ON t."ID" = l."ID"
+            WHERE COALESCE(t."ParentID", l."ParentID") = 0
+            UNION ALL
+            SELECT l2, q.level + 1                       AS level, 
+                breadcrumb || ARRAY[COALESCE(t2."Sort", l2."Sort"), 
+                COALESCE(t2."ID", l2."ID")]              AS "ID", 
+                COALESCE(t2."Status", l2."Status")       AS "Status", 
+                t2."ID" IS NULL                          AS "LifeOnly",
+                COALESCE(t2."Title", l2."Title")         AS "Title",
+                COALESCE(t2."MenuTitle", l2."MenuTitle") AS "MenuTitle"
+            FROM q
+                INNER JOIN "SiteTree_Live" l2
+                    ON l2."ParentID" = (q.l)."ID"
+                LEFT JOIN "SiteTree" t2
+                    ON t2."ID" = l2."ID"
+        )
+        SELECT COALESCE((q.l)."ID", f."ID") AS "ID",
+            COALESCE((q.l)."ParentID", f."ParentID") AS "ParentID",
+            COALESCE(q."MenuTitle", q."Title", f."MenuTitle", f."Title") AS "Title",
+            COALESCE((q.l)."ClassName", f."ClassName") AS "ClassName",
+            COALESCE((q.l)."ShowInMenus", f."ShowInMenus") AS "ShowInMenus",
+            COALESCE(q."Status", f."Status") AS "Status",
+            "LifeOnly",
+            "DraftOnly"
+        FROM    q
+            FULL JOIN (
+                SELECT "ID", "ParentID", "MenuTitle", "Title", "ClassName", "ShowInMenus", "Status", 'f', 't' AS "DraftOnly"
+                FROM "SiteTree" 
+                    WHERE "ID" NOT IN (
+                        SELECT "ID" FROM "SiteTree_Live"
+                    )
+            ) f ON f."ID" = (q.l)."ID"
+        ORDER BY breadcrumb;
 SQL;
-		$vw = DB::query($query);
-		$tree = pg_fetch_all(DB::$lastQuery);
+        $vw = DB::query($query);
+        $tree = pg_fetch_all(DB::$lastQuery);
 
-		$html = $this->chiGetSiteTreeForRecursive($tree);
-		return <<<HTML
-		<div id="sitetree_ul">
-			<ul id="sitetree" class="tree unformatted">
-			  <li id="record-0" class="Root nodelete">
-				<a href="admin/show/root"><strong>Your Site Name</strong></a>
-				<ul>
-				  $html
-				</ul>
-			  </li>
-			</ul>
-		</div>
+        // This lets us override the tree title with an extension
+        if($this->hasMethod('getCMSTreeTitle') && $customTreeTitle = $this->getCMSTreeTitle()) {
+            $treeTitle = $customTreeTitle;
+        } else {
+            $siteConfig = SiteConfig::current_site_config();
+            $treeTitle =  $siteConfig->Title;
+        }
+        $rootLink = $this->Link('show') . '/root';
+        $html = $this->chiGetSiteTreeForRecursive($tree);
+        return <<<HTML
+        <div id="sitetree_ul">
+            <ul id="sitetree" class="tree unformatted">
+              <li id="record-0" class="Root nodelete">
+                <a href="$rootLink"><strong>$treeTitle</strong></a>
+                <ul>
+                  $html
+                </ul>
+              </li>
+            </ul>
+        </div>
 HTML;
-	}
+    }
 
 	/**
 	 * Get a site tree displaying the nodes under the given objects
